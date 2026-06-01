@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "receiving-csi"
+version = "0.1.0"
+description = "Live NexmonCSI capture and parser for AI/ML pipelines"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+]
+
+[tool.setuptools.packages.find]
+include = ["receiving_csi*"]
