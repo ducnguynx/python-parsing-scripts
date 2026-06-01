@@ -6,7 +6,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     raise unittest.SkipTest("NumPy is not installed")
 
-from receiving_csi.nexmon import NexmonCsiParser, NexmonCsiError
+from receiving_csi.nexmon import NexmonCsiParser, NexmonCsiError, unpack_bcm4366c0
 
 
 class NexmonParserTests(unittest.TestCase):
@@ -45,6 +45,35 @@ class NexmonParserTests(unittest.TestCase):
     def test_rejects_bad_magic(self):
         with self.assertRaises(NexmonCsiError):
             NexmonCsiParser().parse(b"not csi")
+
+    def test_unpack_autoscales_large_exponents(self):
+        raw_word = (1 << 6) | 31
+        raw_csi = struct.pack("<I", raw_word) + (b"\x00\x00\x00\x00" * 63)
+
+        csi = unpack_bcm4366c0(raw_csi, 20)
+
+        self.assertEqual(csi.dtype, np.complex64)
+        self.assertEqual(csi[0].real, 0)
+        self.assertEqual(csi[0].imag, 1024)
+
+    def test_unpack_can_preserve_unscaled_magnitude(self):
+        raw_word = (1 << 6) | 31
+        raw_csi = struct.pack("<I", raw_word) + (b"\x00\x00\x00\x00" * 63)
+
+        csi = unpack_bcm4366c0(raw_csi, 20, autoscale=False)
+
+        self.assertGreater(abs(csi[0].imag), np.iinfo(np.int32).max)
+
+    def test_unpack_uses_format_one_real_sign_bit(self):
+        real_sign_mask = 1 << 29
+        real_mantissa = 1 << (6 + 12)
+        raw_word = real_sign_mask | real_mantissa
+        raw_csi = struct.pack("<I", raw_word) + (b"\x00\x00\x00\x00" * 63)
+
+        csi = unpack_bcm4366c0(raw_csi, 20)
+
+        self.assertEqual(csi[0].real, -1024)
+        self.assertEqual(csi[0].imag, 0)
 
 
 def _payload(header, tones):

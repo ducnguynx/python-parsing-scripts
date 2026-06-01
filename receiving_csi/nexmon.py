@@ -77,7 +77,12 @@ def parse_nexmon_payload(
     return NexmonCsiParser(chip=chip).parse(payload, packet)
 
 
-def unpack_bcm4366c0(raw_csi: bytes, bandwidth_mhz: int) -> np.ndarray:
+def unpack_bcm4366c0(
+    raw_csi: bytes,
+    bandwidth_mhz: int,
+    *,
+    autoscale: bool = True,
+) -> np.ndarray:
     expected_bytes = {20: 64 * 4, 40: 128 * 4, 80: 256 * 4}.get(bandwidth_mhz)
     if expected_bytes is None:
         raise NexmonCsiError(f"unsupported bandwidth: {bandwidth_mhz}")
@@ -88,7 +93,7 @@ def unpack_bcm4366c0(raw_csi: bytes, bandwidth_mhz: int) -> np.ndarray:
         )
 
     packed = np.frombuffer(raw_csi, dtype="<u4")
-    iq = _unpack_float_acphy(packed, nbits=10, nman=12, nexp=6)
+    iq = _unpack_float_acphy(packed, nbits=10, nman=12, nexp=6, autoscale=autoscale)
     return (iq[:, 0].astype(np.float32) + 1j * iq[:, 1].astype(np.float32)).astype(
         np.complex64
     )
@@ -100,14 +105,20 @@ def _unpack_float_acphy(
     nbits: int,
     nman: int,
     nexp: int,
+    autoscale: bool,
 ) -> np.ndarray:
     iq_mask = (1 << (nman - 1)) - 1
     e_mask = (1 << nexp) - 1
     e_p = 1 << (nexp - 1)
+    real_sign_mask = 1 << (nexp + 2 * nman - 1)
+    imag_sign_mask = real_sign_mask >> nman
     e_zero = -nman
-    shft = nbits
 
-    out = np.empty((packed.size, 2), dtype=np.int32)
+    mantissas = np.empty((packed.size, 2), dtype=np.int64)
+    exponents = np.empty(packed.size, dtype=np.int16)
+    maxbit = -e_p
+    signs = np.ones((packed.size, 2), dtype=np.int8)
+
     for index, word in enumerate(packed.astype(np.uint32, copy=False)):
         value = int(word)
         real = (value >> (nexp + nman)) & iq_mask
@@ -116,10 +127,32 @@ def _unpack_float_acphy(
         if exponent >= e_p:
             exponent -= e_p << 1
 
-        real_sign = -1 if value & (1 << 31) else 1
-        imag_sign = -1 if value & (1 << (nexp + nman - 1)) else 1
-        out[index, 0] = real_sign * _shift_mantissa(real, exponent + shft, e_zero)
-        out[index, 1] = imag_sign * _shift_mantissa(imag, exponent + shft, e_zero)
+        mantissas[index, 0] = real
+        mantissas[index, 1] = imag
+        exponents[index] = exponent
+        if value & real_sign_mask:
+            signs[index, 0] = -1
+        if value & imag_sign_mask:
+            signs[index, 1] = -1
+
+        mantissa_bits = (real | imag).bit_length() - 1
+        if autoscale and mantissa_bits >= 0:
+            maxbit = max(maxbit, exponent + mantissa_bits)
+
+    shft = nbits - maxbit if autoscale else nbits
+    out = np.empty((packed.size, 2), dtype=np.int64)
+    for index, exponent in enumerate(exponents):
+        scaled_exponent = int(exponent) + shft
+        out[index, 0] = int(signs[index, 0]) * _shift_mantissa(
+            int(mantissas[index, 0]),
+            scaled_exponent,
+            e_zero,
+        )
+        out[index, 1] = int(signs[index, 1]) * _shift_mantissa(
+            int(mantissas[index, 1]),
+            scaled_exponent,
+            e_zero,
+        )
     return out
 
 
