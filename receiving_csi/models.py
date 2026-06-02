@@ -29,8 +29,9 @@ class CsiSample:
     chip_version: int
     bandwidth_mhz: int
     csi: Any
+    css: int | None = None
     packet: PacketInfo = PacketInfo()
     magic: int = 0x1111
     rssi: int | None = None
     frame_control: int | None = None
-    header_layout: str = "compact"
+    header_layout: str = "extended"

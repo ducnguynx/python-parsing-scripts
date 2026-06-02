@@ -34,7 +34,7 @@ class NexmonCsiParser:
         self.chip = chip
 
     def parse(self, payload: bytes, packet: PacketInfo | None = None) -> CsiSample:
-        if len(payload) < 16:
+        if len(payload) < 18:
             raise NexmonCsiError("payload too short for NexmonCSI header")
 
         offsets = _detect_magic_offsets(payload)
@@ -47,7 +47,7 @@ class NexmonCsiParser:
                 return self._parse_header(payload, offset, packet_info)
             except NexmonCsiError:
                 continue
-        raise NexmonCsiError("payload length does not match known NexmonCSI layouts")
+        raise NexmonCsiError("payload length does not match known NexmonCSI header")
 
     def _parse_header(
         self,
@@ -55,17 +55,7 @@ class NexmonCsiParser:
         offset: int,
         packet: PacketInfo,
     ) -> CsiSample:
-        candidates = []
-        for layout in (_parse_extended_header, _parse_compact_header):
-            try:
-                candidates.append(layout(payload, offset, packet))
-            except NexmonCsiError:
-                continue
-
-        if not candidates:
-            raise NexmonCsiError("payload length does not match 20/40/80 MHz CSI")
-
-        sample, raw_csi = candidates[0]
+        sample, raw_csi = _parse_header(payload, offset, packet)
         return replace(sample, csi=unpack_bcm4366c0(raw_csi, sample.bandwidth_mhz))
 
 
@@ -165,39 +155,42 @@ def _shift_mantissa(value: int, exponent: int, e_zero: int) -> int:
 
 
 def _detect_magic_offsets(payload: bytes) -> tuple[int, ...]:
-    if payload[:4] == b"\x11\x11\x11\x11":
-        return (2, 0)
     if payload[:2] == b"\x11\x11":
         return (0,)
     return ()
 
 
-def _parse_extended_header(
+def _parse_header(
     payload: bytes,
     offset: int,
     packet: PacketInfo,
 ) -> tuple[CsiSample, bytes]:
     header_len = offset + 18
     if len(payload) < header_len:
-        raise NexmonCsiError("payload too short for extended NexmonCSI header")
+        raise NexmonCsiError("payload too short for NexmonCSI header")
     csi_bytes = payload[header_len:]
     bandwidth, _tones = _bandwidth_from_length(csi_bytes)
 
     rssi = struct.unpack_from("<b", payload, offset + 2)[0]
     frame_control = payload[offset + 3]
     mac = _format_mac(payload[offset + 4 : offset + 10])
-    seq, css, chanspec, chip_version = struct.unpack_from("<HHHH", payload, offset + 10)
+    sequence_control, css, chanspec, chip_version = struct.unpack_from(
+        "<HHHH",
+        payload,
+        offset + 10,
+    )
 
     return (
         CsiSample(
             mac=mac,
-            seq=seq,
-            core=css & 0x7,
-            spatial_stream=(css >> 3) & 0x7,
+            seq=_sequence_number(sequence_control),
+            core=_core_index(css),
+            spatial_stream=_spatial_stream_index(css),
             chanspec=chanspec,
             chip_version=chip_version,
             bandwidth_mhz=bandwidth,
             csi=np.empty(0, dtype=np.complex64),
+            css=css,
             packet=packet,
             rssi=rssi,
             frame_control=frame_control,
@@ -207,35 +200,17 @@ def _parse_extended_header(
     )
 
 
-def _parse_compact_header(
-    payload: bytes,
-    offset: int,
-    packet: PacketInfo,
-) -> tuple[CsiSample, bytes]:
-    header_len = offset + 16
-    if len(payload) < header_len:
-        raise NexmonCsiError("payload too short for compact NexmonCSI header")
-    csi_bytes = payload[header_len:]
-    bandwidth, _tones = _bandwidth_from_length(csi_bytes)
+def _sequence_number(sequence_control: int) -> int:
+    return sequence_control >> 4
 
-    mac = _format_mac(payload[offset + 2 : offset + 8])
-    seq, css, chanspec, chip_version = struct.unpack_from("<HHHH", payload, offset + 8)
 
-    return (
-        CsiSample(
-            mac=mac,
-            seq=seq,
-            core=css & 0x7,
-            spatial_stream=(css >> 3) & 0x7,
-            chanspec=chanspec,
-            chip_version=chip_version,
-            bandwidth_mhz=bandwidth,
-            csi=np.empty(0, dtype=np.complex64),
-            packet=packet,
-            header_layout="compact",
-        ),
-        csi_bytes,
-    )
+def _core_index(css: int) -> int:
+    return (css >> 8) & 0x7
+
+
+def _spatial_stream_index(css: int) -> int:
+    return css & 0x7
+
 
 
 def _bandwidth_from_length(csi_bytes: bytes) -> tuple[int, int]:

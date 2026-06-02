@@ -38,8 +38,9 @@ class PcapTests(unittest.TestCase):
 
         csi_payload = (
             b"\x11\x11"
+            + struct.pack("<bB", -42, 0x88)
             + bytes.fromhex("001122334455")
-            + struct.pack("<HHHH", 7, 0x09, 0x1234, 0x4366)
+            + struct.pack("<HHHH", 7 << 4, 0x0101, 0x1234, 0x4366)
             + (b"\x00\x00\x00\x00" * 64)
         )
         samples = []

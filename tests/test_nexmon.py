@@ -11,7 +11,7 @@ from receiving_csi.nexmon import NexmonCsiParser, NexmonCsiError, unpack_bcm4366
 
 class NexmonParserTests(unittest.TestCase):
     def test_parse_extended_header_and_unpack(self):
-        payload = _payload(header="extended", tones=64)
+        payload = _payload(tones=64, sequence=123, fragment=2)
         sample = NexmonCsiParser().parse(payload)
 
         self.assertEqual(sample.header_layout, "extended")
@@ -25,20 +25,39 @@ class NexmonParserTests(unittest.TestCase):
         self.assertEqual(sample.csi.shape, (64,))
         self.assertEqual(sample.csi.dtype, np.complex64)
 
-    def test_parse_compact_header(self):
-        payload = _payload(header="compact", tones=128)
+    def test_parse_sequence_control_uses_upper_12_bits(self):
+        payload = _payload(tones=128, sequence=0x0FB7, fragment=0x2)
         sample = NexmonCsiParser().parse(payload)
 
-        self.assertEqual(sample.header_layout, "compact")
-        self.assertIsNone(sample.rssi)
+        self.assertEqual(sample.seq, 0x0FB7)
+        self.assertEqual(payload[10:12], bytes.fromhex("72fb"))
+
+    def test_rejects_compact_header_without_rssi_and_frame_control(self):
+        raw_csi = b"\x00\x00\x00\x00" * 64
+        compact_payload = (
+            b"\x11\x11"
+            + bytes.fromhex("001122334455")
+            + struct.pack("<HHHH", 123 << 4, _css(core=1, spatial=3), 0x1234, 0x4366)
+            + raw_csi
+        )
+
+        with self.assertRaises(NexmonCsiError):
+            NexmonCsiParser().parse(compact_payload)
+
+    def test_parse_40mhz_header(self):
+        payload = _payload(tones=128)
+        sample = NexmonCsiParser().parse(payload)
+
+        self.assertEqual(sample.header_layout, "extended")
+        self.assertEqual(sample.rssi, -42)
         self.assertEqual(sample.bandwidth_mhz, 40)
         self.assertEqual(sample.csi.shape, (128,))
 
-    def test_parse_legacy_four_byte_magic(self):
-        payload = b"\x11\x11" + _payload(header="compact", tones=256)
+    def test_parse_80mhz_header(self):
+        payload = _payload(tones=256)
         sample = NexmonCsiParser().parse(payload)
 
-        self.assertEqual(sample.header_layout, "compact")
+        self.assertEqual(sample.header_layout, "extended")
         self.assertEqual(sample.bandwidth_mhz, 80)
         self.assertEqual(sample.csi.shape, (256,))
 
@@ -76,19 +95,17 @@ class NexmonParserTests(unittest.TestCase):
         self.assertEqual(csi[0].imag, 0)
 
 
-def _payload(header, tones):
+def _payload(tones, sequence=123, fragment=0):
     raw_csi = b"\x00\x00\x00\x00" * tones
-    if header == "extended":
-        return (
-            b"\x11\x11"
-            + struct.pack("<bB", -42, 0x88)
-            + bytes.fromhex("001122334455")
-            + struct.pack("<HHHH", 123, 0x19, 0x1234, 0x4366)
-            + raw_csi
-        )
+    sequence_control = (sequence << 4) | fragment
     return (
         b"\x11\x11"
+        + struct.pack("<bB", -42, 0x88)
         + bytes.fromhex("001122334455")
-        + struct.pack("<HHHH", 123, 0x19, 0x1234, 0x4366)
+        + struct.pack("<HHHH", sequence_control, _css(core=1, spatial=3), 0x1234, 0x4366)
         + raw_csi
     )
+
+
+def _css(core, spatial):
+    return (core << 8) | spatial
