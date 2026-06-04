@@ -69,6 +69,7 @@ def _summary(sample: CsiSample) -> dict[str, object]:
         "dst_ip": sample.packet.dst_ip,
         "src_port": sample.packet.src_port,
         "dst_port": sample.packet.dst_port,
+        "source_id": sample.packet.source_id,
         "timestamp_sec": sample.packet.timestamp_sec,
         "timestamp_subsec": sample.packet.timestamp_subsec,
         "timestamp_resolution": sample.packet.timestamp_resolution,

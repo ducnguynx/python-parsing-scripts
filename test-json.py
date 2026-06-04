@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 from pathlib import Path
 
 from receiving_csi import CsiSample, read_pcap_stream
@@ -19,53 +20,71 @@ class MultiCoreJsonSampleWriter:
         self.expected_cores = expected_cores
         self.count = 0
         self.pending: dict[tuple[str, int, int, int], dict[int, CsiSample]] = {}
+        self.lock = threading.Lock()
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def __call__(self, sample: CsiSample) -> None:
-        print(
-            "packet seq={seq} css=0x{css:04x} core={core} spatial={spatial} "
-            "bw={bw}MHz mac={mac}".format(
-                seq=sample.seq,
-                css=sample.css if sample.css is not None else 0,
-                core=sample.core,
-                spatial=sample.spatial_stream,
-                bw=sample.bandwidth_mhz,
-                mac=sample.mac,
-            ),
-            file=sys.stderr,
-            flush=True,
-        )
-
-        if not 0 <= sample.core < self.expected_cores:
-            print(f"warning: skipping unexpected core {sample.core}", file=sys.stderr, flush=True)
-            return
-
-        key = (sample.mac, sample.seq, sample.spatial_stream, sample.bandwidth_mhz)
-        samples_by_core = self.pending.setdefault(key, {})
-        if sample.core in samples_by_core:
+        with self.lock:
             print(
-                "warning: duplicate core {core} for seq={seq}; still waiting for cores {missing}".format(
-                    core=sample.core,
+                "packet source={source} seq={seq} css=0x{css:04x} core={core} "
+                "spatial={spatial} bw={bw}MHz mac={mac}".format(
+                    source=sample.packet.source_id,
                     seq=sample.seq,
-                    missing=missing_cores(samples_by_core, self.expected_cores),
+                    css=sample.css if sample.css is not None else 0,
+                    core=sample.core,
+                    spatial=sample.spatial_stream,
+                    bw=sample.bandwidth_mhz,
+                    mac=sample.mac,
                 ),
                 file=sys.stderr,
                 flush=True,
             )
-        samples_by_core[sample.core] = sample
 
-        if len(samples_by_core) < self.expected_cores:
-            return
+            if self.count >= self.limit:
+                raise StopCapture
 
-        self.count += 1
-        row = samples_to_json(samples_by_core)
-        output_path = self.output_dir / f"sample_{self.count:04d}.json"
-        output_path.write_text(json.dumps(row, indent=2) + "\n", encoding="utf-8")
-        del self.pending[key]
-        print(f"wrote {output_path} with cores {sorted(samples_by_core)}", file=sys.stderr, flush=True)
+            if not 0 <= sample.core < self.expected_cores:
+                print(f"warning: skipping unexpected core {sample.core}", file=sys.stderr, flush=True)
+                return
 
-        if self.count >= self.limit:
-            raise StopCapture
+            key = (
+                sample.packet.source_id,
+                sample.mac,
+                sample.seq,
+                sample.spatial_stream,
+                sample.bandwidth_mhz,
+            )
+            samples_by_core = self.pending.setdefault(key, {})
+            if sample.core in samples_by_core:
+                print(
+                    "warning: duplicate core {core} for source={source} seq={seq}; "
+                    "still waiting for cores {missing}".format(
+                        core=sample.core,
+                        source=sample.packet.source_id,
+                        seq=sample.seq,
+                        missing=missing_cores(samples_by_core, self.expected_cores),
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+            samples_by_core[sample.core] = sample
+
+            if len(samples_by_core) < self.expected_cores:
+                return
+
+            self.count += 1
+            row = samples_to_json(samples_by_core)
+            output_path = self.output_dir / f"sample_{self.count:04d}.json"
+            output_path.write_text(json.dumps(row, indent=2) + "\n", encoding="utf-8")
+            del self.pending[key]
+            print(
+                f"wrote {output_path} with cores {sorted(samples_by_core)}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+            if self.count >= self.limit:
+                raise StopCapture
 
 
 def samples_to_json(samples_by_core: dict[int, CsiSample]) -> dict[str, object]:
@@ -81,6 +100,7 @@ def samples_to_json(samples_by_core: dict[int, CsiSample]) -> dict[str, object]:
 
     return {
         "device_id": first.mac,
+        "source_id": first.packet.source_id,
         "seq": first.seq,
         "timestamp": packet_timestamp_us(first),
         "bw": first.bandwidth_mhz,

@@ -9,6 +9,7 @@ __all__ = [
     "parse_nexmon_payload",
     "listen_udp",
     "read_pcap_stream",
+    "read_pcap_streams",
 ]
 
 
@@ -20,8 +21,12 @@ def __getattr__(name):
             "NexmonCsiParser": NexmonCsiParser,
             "parse_nexmon_payload": parse_nexmon_payload,
         }[name]
-    if name in {"listen_udp", "read_pcap_stream"}:
-        from .receivers import listen_udp, read_pcap_stream
+    if name in {"listen_udp", "read_pcap_stream", "read_pcap_streams"}:
+        from .receivers import listen_udp, read_pcap_stream, read_pcap_streams
 
-        return {"listen_udp": listen_udp, "read_pcap_stream": read_pcap_stream}[name]
+        return {
+            "listen_udp": listen_udp,
+            "read_pcap_stream": read_pcap_stream,
+            "read_pcap_streams": read_pcap_streams,
+        }[name]
     raise AttributeError(name)

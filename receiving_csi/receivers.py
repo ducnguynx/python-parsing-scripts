@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import socket
+import threading
 from collections.abc import Callable
-from typing import BinaryIO
+from typing import BinaryIO, Iterable, Mapping
 
 from .models import CsiSample, PacketInfo
 from .nexmon import NexmonCsiError, NexmonCsiParser
@@ -19,6 +20,7 @@ def read_pcap_stream(
     port: int = 5500,
     error_callback: ErrorCallback | None = None,
     parser: NexmonCsiParser | None = None,
+    source_id: str | None = None,
 ) -> None:
     parser = parser or NexmonCsiParser()
     reader = PcapStreamReader(stream)
@@ -38,11 +40,45 @@ def read_pcap_stream(
         yield first_packet
         yield from packets
 
-    for payload, packet_info in iter_udp_payloads(packet_iter(), reader.linktype, dst_port=port):
+    for payload, packet_info in iter_udp_payloads(
+        packet_iter(),
+        reader.linktype,
+        dst_port=port,
+        source_id=source_id,
+    ):
         try:
             callback(parser.parse(payload, packet_info))
         except NexmonCsiError as exc:
             _report_error(exc, error_callback)
+
+
+def read_pcap_streams(
+    streams: Mapping[str, BinaryIO] | Iterable[tuple[str, BinaryIO]],
+    callback: SampleCallback,
+    *,
+    port: int = 5500,
+    error_callback: ErrorCallback | None = None,
+) -> None:
+    items = streams.items() if isinstance(streams, Mapping) else streams
+    threads = [
+        threading.Thread(
+            target=read_pcap_stream,
+            kwargs={
+                "stream": stream,
+                "callback": callback,
+                "port": port,
+                "error_callback": error_callback,
+                "source_id": source_id,
+            },
+            name=f"pcap-stream-{source_id}",
+        )
+        for source_id, stream in items
+    ]
+
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
 
 
 def listen_udp(

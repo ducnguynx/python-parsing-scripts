@@ -11,6 +11,7 @@ class PacketInfo:
     timestamp_sec: int | None = None
     timestamp_subsec: int | None = None
     timestamp_resolution: str = "us"
+    source_id: str | None = None
     src_ip: str | None = None
     dst_ip: str | None = None
     src_port: int | None = None

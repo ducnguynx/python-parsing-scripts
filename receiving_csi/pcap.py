@@ -95,6 +95,7 @@ def iter_udp_payloads(
     linktype: int,
     *,
     dst_port: int = 5500,
+    source_id: str | None = None,
 ) -> Iterator[tuple[bytes, PacketInfo]]:
     for packet in packets:
         try:
@@ -110,6 +111,7 @@ def iter_udp_payloads(
                 timestamp_sec=packet.ts_sec,
                 timestamp_subsec=packet.ts_subsec,
                 timestamp_resolution=packet.timestamp_resolution,
+                source_id=source_id,
                 src_ip=src_ip,
                 dst_ip=dst_ip,
                 src_port=src_port,
