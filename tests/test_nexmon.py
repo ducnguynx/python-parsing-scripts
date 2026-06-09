@@ -6,7 +6,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     raise unittest.SkipTest("NumPy is not installed")
 
-from receiving_csi.nexmon import NexmonCsiParser, NexmonCsiError, unpack_bcm4366c0
+from receiving_csi.nexmon import NexmonCsiParser, unpack_bcm4366c0
 
 
 class NexmonParserTests(unittest.TestCase):
@@ -32,7 +32,7 @@ class NexmonParserTests(unittest.TestCase):
         self.assertEqual(sample.seq, 0x0FB7)
         self.assertEqual(payload[10:12], bytes.fromhex("72fb"))
 
-    def test_rejects_compact_header_without_rssi_and_frame_control(self):
+    def test_zeroes_compact_header_without_rssi_and_frame_control(self):
         raw_csi = b"\x00\x00\x00\x00" * 64
         compact_payload = (
             b"\x11\x11"
@@ -41,8 +41,9 @@ class NexmonParserTests(unittest.TestCase):
             + raw_csi
         )
 
-        with self.assertRaises(NexmonCsiError):
-            NexmonCsiParser().parse(compact_payload)
+        sample = NexmonCsiParser().parse(compact_payload)
+
+        assert_zero_sample(self, sample)
 
     def test_parse_40mhz_header(self):
         payload = _payload(tones=128)
@@ -61,9 +62,22 @@ class NexmonParserTests(unittest.TestCase):
         self.assertEqual(sample.bandwidth_mhz, 80)
         self.assertEqual(sample.csi.shape, (256,))
 
-    def test_rejects_bad_magic(self):
-        with self.assertRaises(NexmonCsiError):
-            NexmonCsiParser().parse(b"not csi")
+    def test_zeroes_bad_magic(self):
+        sample = NexmonCsiParser().parse(b"not csi")
+
+        assert_zero_sample(self, sample)
+
+    def test_zeroes_legacy_four_byte_magic_prefix(self):
+        payload = b"\x11\x11" + _payload(tones=64)
+        sample = NexmonCsiParser().parse(payload)
+
+        assert_zero_sample(self, sample)
+
+    def test_zeroes_unsupported_csi_length(self):
+        payload = _payload(tones=63)
+        sample = NexmonCsiParser().parse(payload)
+
+        assert_zero_sample(self, sample)
 
     def test_unpack_autoscales_large_exponents(self):
         raw_word = (1 << 6) | 31
@@ -109,3 +123,20 @@ def _payload(tones, sequence=123, fragment=0):
 
 def _css(core, spatial):
     return (core << 8) | spatial
+
+
+def assert_zero_sample(testcase, sample):
+    testcase.assertEqual(sample.header_layout, "invalid")
+    testcase.assertEqual(sample.magic, 0)
+    testcase.assertEqual(sample.mac, "00:00:00:00:00:00")
+    testcase.assertEqual(sample.seq, 0)
+    testcase.assertEqual(sample.core, 0)
+    testcase.assertEqual(sample.spatial_stream, 0)
+    testcase.assertEqual(sample.chanspec, 0)
+    testcase.assertEqual(sample.chip_version, 0)
+    testcase.assertEqual(sample.bandwidth_mhz, 0)
+    testcase.assertEqual(sample.css, 0)
+    testcase.assertEqual(sample.rssi, 0)
+    testcase.assertEqual(sample.frame_control, 0)
+    testcase.assertEqual(sample.csi.shape, (0,))
+    testcase.assertEqual(sample.csi.dtype, np.complex64)

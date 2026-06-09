@@ -34,28 +34,18 @@ class NexmonCsiParser:
         self.chip = chip
 
     def parse(self, payload: bytes, packet: PacketInfo | None = None) -> CsiSample:
-        if len(payload) < 18:
-            raise NexmonCsiError("payload too short for NexmonCSI header")
-
-        offsets = _detect_magic_offsets(payload)
-        if not offsets:
-            raise NexmonCsiError("missing NexmonCSI magic 0x1111")
-
         packet_info = packet or PacketInfo()
-        for offset in offsets:
-            try:
-                return self._parse_header(payload, offset, packet_info)
-            except NexmonCsiError:
-                continue
-        raise NexmonCsiError("payload length does not match known NexmonCSI header")
+        try:
+            return self._parse_header(payload, packet_info)
+        except NexmonCsiError:
+            return _zero_sample(packet_info)
 
     def _parse_header(
         self,
         payload: bytes,
-        offset: int,
         packet: PacketInfo,
     ) -> CsiSample:
-        sample, raw_csi = _parse_header(payload, offset, packet)
+        sample, raw_csi = _parse_header(payload, packet)
         return replace(sample, csi=unpack_bcm4366c0(raw_csi, sample.bandwidth_mhz))
 
 
@@ -154,20 +144,16 @@ def _shift_mantissa(value: int, exponent: int, e_zero: int) -> int:
     return value << exponent
 
 
-def _detect_magic_offsets(payload: bytes) -> tuple[int, ...]:
-    if payload[:2] == b"\x11\x11":
-        return (0,)
-    return ()
-
-
 def _parse_header(
     payload: bytes,
-    offset: int,
     packet: PacketInfo,
 ) -> tuple[CsiSample, bytes]:
-    header_len = offset + 18
+    offset = 0
+    header_len = 18
     if len(payload) < header_len:
         raise NexmonCsiError("payload too short for NexmonCSI header")
+    if payload[:2] != b"\x11\x11":
+        raise NexmonCsiError("missing NexmonCSI magic 0x1111")
     csi_bytes = payload[header_len:]
     bandwidth, _tones = _bandwidth_from_length(csi_bytes)
 
@@ -197,6 +183,25 @@ def _parse_header(
             header_layout="extended",
         ),
         csi_bytes,
+    )
+
+
+def _zero_sample(packet: PacketInfo) -> CsiSample:
+    return CsiSample(
+        mac="00:00:00:00:00:00",
+        seq=0,
+        core=0,
+        spatial_stream=0,
+        chanspec=0,
+        chip_version=0,
+        bandwidth_mhz=0,
+        csi=np.zeros(0, dtype=np.complex64),
+        css=0,
+        packet=packet,
+        magic=0,
+        rssi=0,
+        frame_control=0,
+        header_layout="invalid",
     )
 
 

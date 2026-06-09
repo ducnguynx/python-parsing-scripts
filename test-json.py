@@ -19,7 +19,7 @@ class MultiCoreJsonSampleWriter:
         self.limit = limit
         self.expected_cores = expected_cores
         self.count = 0
-        self.pending: dict[tuple[str, int, int, int], dict[int, CsiSample]] = {}
+        self.pending: dict[tuple[str | None, str, int, int, int, int], dict[int, CsiSample]] = {}
         self.lock = threading.Lock()
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -27,13 +27,16 @@ class MultiCoreJsonSampleWriter:
         with self.lock:
             print(
                 "packet source={source} seq={seq} css=0x{css:04x} core={core} "
-                "spatial={spatial} bw={bw}MHz mac={mac}".format(
+                "spatial={spatial} bw={bw}MHz ch={channel} chanspec=0x{chanspec:04x} "
+                "mac={mac}".format(
                     source=sample.packet.source_id,
                     seq=sample.seq,
                     css=sample.css if sample.css is not None else 0,
                     core=sample.core,
                     spatial=sample.spatial_stream,
                     bw=sample.bandwidth_mhz,
+                    channel=decode_broadcom_channel(sample.chanspec, sample.bandwidth_mhz),
+                    chanspec=sample.chanspec,
                     mac=sample.mac,
                 ),
                 file=sys.stderr,
@@ -53,6 +56,7 @@ class MultiCoreJsonSampleWriter:
                 sample.seq,
                 sample.spatial_stream,
                 sample.bandwidth_mhz,
+                sample.chanspec,
             )
             samples_by_core = self.pending.setdefault(key, {})
             if sample.core in samples_by_core:
@@ -104,6 +108,7 @@ def samples_to_json(samples_by_core: dict[int, CsiSample]) -> dict[str, object]:
         "seq": first.seq,
         "timestamp": packet_timestamp_us(first),
         "bw": first.bandwidth_mhz,
+        "ch": decode_broadcom_channel(first.chanspec, first.bandwidth_mhz),
         "css": {f"c{core}": sample.css for core, sample in sorted(samples_by_core.items())},
         "agc": [0, 0, 0, 0],
         "rssi": rssi,
@@ -113,6 +118,31 @@ def samples_to_json(samples_by_core: dict[int, CsiSample]) -> dict[str, object]:
 
 def missing_cores(samples_by_core: dict[int, CsiSample], expected_cores: int) -> list[int]:
     return [core for core in range(expected_cores) if core not in samples_by_core]
+
+
+def decode_broadcom_channel(chanspec: int, bandwidth_mhz: int) -> int:
+    channel = chanspec & 0x00FF
+    if bandwidth_mhz == 20:
+        return channel
+
+    sideband = (chanspec >> 8) & 0x0F
+    if bandwidth_mhz == 40:
+        if sideband == 1:
+            return channel - 2
+        if sideband == 2:
+            return channel + 2
+        return channel
+
+    if bandwidth_mhz == 80:
+        offsets = {
+            1: -6,
+            2: -2,
+            3: 2,
+            4: 6,
+        }
+        return channel + offsets.get(sideband, 0)
+
+    return channel
 
 
 def packet_timestamp_us(sample: CsiSample) -> int | None:
